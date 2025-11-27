@@ -82,10 +82,21 @@ class GraphGenerator:
             
         Returns:
             True if successful, False otherwise
+        
+        Raises:
+            ImportError: If graphviz Python package is not installed
+            RuntimeError: If graphviz system binary is not found
         """
         if not GRAPHVIZ_AVAILABLE:
-            print("Warning: Graphviz not available. Install with: pip install graphviz")
-            return False
+            error_msg = (
+                "Graphviz Python package not installed!\n"
+                "Install with: pip install graphviz\n"
+                "Also ensure graphviz system package is installed:\n"
+                "  - Ubuntu/Debian: sudo apt-get install graphviz\n"
+                "  - macOS: brew install graphviz\n"
+                "  - Arch: sudo pacman -S graphviz"
+            )
+            raise ImportError(error_msg)
         
         dot = Digraph(comment='Heterogeneous Training Architecture')
         dot.attr(rankdir='LR', splines='ortho')
@@ -133,11 +144,21 @@ class GraphGenerator:
         # Render
         try:
             dot.render(output_path, format=format, cleanup=True)
-            print(f"Architecture diagram saved to {output_path}.{format}")
+            print(f"✓ Architecture diagram saved to {output_path}.{format}")
             return True
+        except FileNotFoundError as e:
+            error_msg = (
+                f"Graphviz system binary not found!\n"
+                f"Please install graphviz system package:\n"
+                f"  - Ubuntu/Debian: sudo apt-get install graphviz\n"
+                f"  - macOS: brew install graphviz\n"
+                f"  - Arch: sudo pacman -S graphviz\n"
+                f"Original error: {e}"
+            )
+            raise RuntimeError(error_msg) from e
         except Exception as e:
-            print(f"Error generating Graphviz diagram: {e}")
-            return False
+            error_msg = f"Error generating Graphviz diagram: {e}"
+            raise RuntimeError(error_msg) from e
     
     def generate_mermaid(self, output_path: str = "architecture.mmd") -> bool:
         """

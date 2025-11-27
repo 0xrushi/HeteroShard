@@ -115,7 +115,8 @@ class HeterogeneousTrainer:
     def generate_visualization(
         self,
         output_path: str = "architecture",
-        format: str = "png"
+        format: str = "png",
+        raise_on_error: bool = True
     ) -> None:
         """
         Generate architecture visualization.
@@ -123,6 +124,7 @@ class HeterogeneousTrainer:
         Args:
             output_path: Output file path (without extension)
             format: Output format ("png", "svg", "mmd" for Mermaid)
+            raise_on_error: If True, raise exceptions; if False, print warnings
         """
         if not self.visualize:
             return
@@ -167,10 +169,16 @@ class HeterogeneousTrainer:
             prev_node = node_id
         
         # Generate diagram
-        if format == "mmd":
-            graph.generate_mermaid(f"{output_path}.mmd")
-        else:
-            graph.generate_graphviz(output_path, format)
+        try:
+            if format == "mmd":
+                graph.generate_mermaid(f"{output_path}.mmd")
+            else:
+                graph.generate_graphviz(output_path, format)
+        except (ImportError, RuntimeError) as e:
+            if raise_on_error:
+                raise
+            else:
+                print(f"Warning: Could not generate {format} diagram: {e}")
     
     def _get_layer_names(self, model: nn.Module) -> List[str]:
         """Extract layer names from a model."""
