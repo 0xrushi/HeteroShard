@@ -60,7 +60,7 @@ class Config:
     num_epochs = 1
     warmup_steps = 10
     clip_grad_norm = 1.0
-    use_fp16 = True
+    use_fp16 = False
 
     system_prompt = "You are a helpful assistant."
     instruction_template = "<|user|>\n{instruction}\n"
@@ -273,13 +273,19 @@ class RemoteModelShard(nn.Module):
         
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
-        
+
         loss = None
         if labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous()
+            # Compute CE loss in full precision for stability
+            shift_logits = logits[..., :-1, :].contiguous().float()
             shift_labels = labels[..., 1:].contiguous()
-            loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            if torch.cuda.is_available():
+                with torch.amp.autocast('cuda', enabled=False):
+                    loss_fct = nn.CrossEntropyLoss()
+                    loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            else:
+                loss_fct = nn.CrossEntropyLoss()
+                loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
         
         return loss if loss is not None else torch.tensor(0.0, device=hidden_states.device)
 
@@ -390,17 +396,30 @@ def run_worker(worker_config: dict):
             attention_mask = attention_mask.to(device) if attention_mask is not None else None
             labels = labels.to(device) if labels is not None else None
 
-            # Forward + loss under autocast
+            # Forward + loss under autocast for model; CE in fp32 inside module
             if torch.cuda.is_available() and Config.use_fp16:
                 with torch.amp.autocast('cuda'):
                     loss = remote_shard(hidden_states, attention_mask, labels)
             else:
                 loss = remote_shard(hidden_states, attention_mask, labels)
 
+            # Guard against NaN/Inf loss
+            finite_loss = torch.isfinite(loss).item()
+
             # Backprop to obtain d(loss)/d(hidden_states)
             remote_shard.zero_grad(set_to_none=True)
-            loss.backward()
-            grad_hidden = hidden_states.grad.detach()
+            if finite_loss:
+                loss.backward()
+                grad_hidden = hidden_states.grad.detach()
+            else:
+                grad_hidden = torch.zeros_like(hidden_states)
+
+            # Sanitize gradient and clip to reasonable norm
+            grad_hidden = torch.nan_to_num(grad_hidden, nan=0.0, posinf=1e4, neginf=-1e4)
+            max_norm = 1.0
+            grad_norm = grad_hidden.norm(2)
+            if torch.isfinite(grad_norm) and grad_norm > max_norm:
+                grad_hidden = grad_hidden * (max_norm / (grad_norm + 1e-6))
 
             print(f"[Step {step}] Loss: {loss.item():.4f}")
             # Send loss and gradient back
@@ -532,6 +551,8 @@ def run_coordinator(hetero_config: dict):
                 break
             loss = loss.to(device)
             grad_hidden = grad_hidden.to(device)
+            # Extra safety on coordinator: sanitize non-finite grads
+            grad_hidden = torch.nan_to_num(grad_hidden, nan=0.0, posinf=1e4, neginf=-1e4)
             
             # Scale gradient for accumulation (equivalent to loss/=accum)
             grad_hidden = grad_hidden / Config.grad_accum_steps
