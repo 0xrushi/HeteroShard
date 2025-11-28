@@ -169,6 +169,18 @@ class CosineScheduler:
             group["lr"] = lr
 
 
+def ensure_output_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+
+def save_lora(peft_model, output_dir: str, step: Optional[int] = None):
+    suffix = f"_step{step}" if step is not None else ""
+    save_dir = os.path.join(output_dir, f"lora{suffix}")
+    os.makedirs(save_dir, exist_ok=True)
+    peft_model.save_pretrained(save_dir)
+    print(f"Saved LoRA adapters to: {save_dir}")
+
+
 class LocalModelShard(nn.Module):
     """Local shard: Embedding + Layers 0-15"""
     def __init__(self, full_model, split_layer: int = 16):
@@ -581,6 +593,34 @@ def run_coordinator(hetero_config: dict):
     
     print("\n✓ Training complete!")
     sock.close()
+
+    # Save LoRA adapters and generate a sample like the single-machine example
+    try:
+        ensure_output_dir(Config.output_dir)
+        save_lora(full_model, Config.output_dir)
+
+        full_model.eval()
+        test_prompt = (
+            f"{Config.bos_token}{Config.system_prompt}\n"
+            + Config.instruction_template.format(instruction="Write a short haiku about distributed training.")
+            + "<|assistant|>\n"
+        )
+        inputs = tokenizer(test_prompt, return_tensors="pt")
+        # Move inputs to the same device as the model's embedding layer
+        model_device = next(full_model.parameters()).device
+        inputs = {k: v.to(model_device) for k, v in inputs.items()}
+        with torch.no_grad():
+            gen = full_model.generate(
+                **inputs,
+                max_new_tokens=128,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        print("\nSample generation:\n", tokenizer.decode(gen[0], skip_special_tokens=True))
+    except Exception as e:
+        print(f"Warning: sampler generation failed: {e}")
 
 
 def main():
