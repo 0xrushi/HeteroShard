@@ -383,12 +383,12 @@ def run_worker(worker_config: dict):
             attention_mask = recv_tensor(conn)
             labels = recv_tensor(conn)
             
-            hidden_states = hidden_states.to(device)
+            # Move boundary activations to device and make them a leaf requiring grad
+            hidden_states = hidden_states.to(device).detach()
+            hidden_states.requires_grad_(True)
+            hidden_states.retain_grad()
             attention_mask = attention_mask.to(device) if attention_mask is not None else None
             labels = labels.to(device) if labels is not None else None
-            
-            # Enable gradient w.r.t. boundary activations
-            hidden_states.requires_grad_(True)
 
             # Forward + loss under autocast
             if torch.cuda.is_available() and Config.use_fp16:
@@ -522,8 +522,16 @@ def run_coordinator(hetero_config: dict):
             send_tensor(sock, labels)
             
             # Receive loss and gradient w.r.t. hidden_states from worker
-            loss = recv_tensor(sock).to(device)
-            grad_hidden = recv_tensor(sock).to(device)
+            loss = recv_tensor(sock)
+            if loss is None:
+                print("Connection lost while receiving loss from worker.")
+                break
+            grad_hidden = recv_tensor(sock)
+            if grad_hidden is None:
+                print("Connection lost while receiving gradient from worker.")
+                break
+            loss = loss.to(device)
+            grad_hidden = grad_hidden.to(device)
             loss = loss / Config.grad_accum_steps
 
             # Backpropagate into local shard using received gradient
