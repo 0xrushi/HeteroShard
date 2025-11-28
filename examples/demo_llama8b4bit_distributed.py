@@ -529,6 +529,9 @@ def run_coordinator(hetero_config: dict):
     print("=" * 70)
     print(f"Steps: {total_steps} | Batch: {Config.batch_size} | Accum: {Config.grad_accum_steps}\n")
     
+    # Measure training time
+    train_start_time = time.perf_counter()
+
     # Training loop
     global_step = 0
     accum_steps = 0
@@ -591,7 +594,12 @@ def run_coordinator(hetero_config: dict):
                 lr = scheduler.optimizer.param_groups[0]["lr"]
                 print(f"Epoch {epoch} | Step {global_step}/{total_steps} | Loss {avg_loss:.4f} | LR {lr:.6f}")
     
+    # End timing
+    train_end_time = time.perf_counter()
+    total_train_time = train_end_time - train_start_time
+
     print("\n✓ Training complete!")
+    print(f"Total training time: {total_train_time:.2f} seconds")
     sock.close()
 
     # Save LoRA adapters and generate a sample like the single-machine example
