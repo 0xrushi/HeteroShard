@@ -387,11 +387,25 @@ def run_worker(worker_config: dict):
             attention_mask = attention_mask.to(device) if attention_mask is not None else None
             labels = labels.to(device) if labels is not None else None
             
-            with torch.cuda.amp.autocast(enabled=Config.use_fp16):
+            # Enable gradient w.r.t. boundary activations
+            hidden_states.requires_grad_(True)
+
+            # Forward + loss under autocast
+            if torch.cuda.is_available() and Config.use_fp16:
+                with torch.amp.autocast('cuda'):
+                    loss = remote_shard(hidden_states, attention_mask, labels)
+            else:
                 loss = remote_shard(hidden_states, attention_mask, labels)
-            
+
+            # Backprop to obtain d(loss)/d(hidden_states)
+            remote_shard.zero_grad(set_to_none=True)
+            loss.backward()
+            grad_hidden = hidden_states.grad.detach()
+
             print(f"[Step {step}] Loss: {loss.item():.4f}")
-            send_tensor(conn, loss.cpu())
+            # Send loss and gradient back
+            send_tensor(conn, loss.detach().cpu())
+            send_tensor(conn, grad_hidden.cpu())
             print(f"[Step {step}] ✓ Complete\n")
             step += 1
             
@@ -475,7 +489,9 @@ def run_coordinator(hetero_config: dict):
     
     total_steps = Config.num_epochs * math.ceil(len(loader) / Config.grad_accum_steps)
     scheduler = CosineScheduler(optimizer, warmup_steps=Config.warmup_steps, total_steps=total_steps)
-    scaler = torch.cuda.amp.GradScaler(enabled=Config.use_fp16)
+    # Use new torch.amp API (GradScaler requires CUDA; disable otherwise)
+    use_cuda_amp = (Config.use_fp16 and torch.cuda.is_available())
+    scaler = torch.amp.GradScaler('cuda') if use_cuda_amp else None
     
     print("=" * 70)
     print("TRAINING")
@@ -493,7 +509,11 @@ def run_coordinator(hetero_config: dict):
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"]
             
-            with torch.cuda.amp.autocast(enabled=Config.use_fp16):
+            # Local forward under autocast (new torch.amp API)
+            if use_cuda_amp:
+                with torch.amp.autocast('cuda'):
+                    hidden_states = local_shard(input_ids, attention_mask)
+            else:
                 hidden_states = local_shard(input_ids, attention_mask)
             
             # Send to worker
@@ -501,21 +521,35 @@ def run_coordinator(hetero_config: dict):
             send_tensor(sock, attention_mask.cpu())
             send_tensor(sock, labels)
             
-            # Receive loss
+            # Receive loss and gradient w.r.t. hidden_states from worker
             loss = recv_tensor(sock).to(device)
+            grad_hidden = recv_tensor(sock).to(device)
             loss = loss / Config.grad_accum_steps
-            
-            scaler.scale(loss).backward()
-            running_loss += loss.item()
+
+            # Backpropagate into local shard using received gradient
+            # If using GradScaler, manually scale external gradient
+            if use_cuda_amp and scaler is not None:
+                scaled_grad = grad_hidden * scaler.get_scale()
+                hidden_states.backward(scaled_grad)
+            else:
+                hidden_states.backward(grad_hidden)
+
+            running_loss += float(loss.item())
             accum_steps += 1
             
             if accum_steps % Config.grad_accum_steps == 0:
-                if Config.clip_grad_norm:
+                # Always unscale before step if using amp, and optionally clip
+                if use_cuda_amp and scaler is not None:
                     scaler.unscale_(optimizer)
+                if Config.clip_grad_norm:
                     torch.nn.utils.clip_grad_norm_(local_shard.parameters(), Config.clip_grad_norm)
-                
-                scaler.step(optimizer)
-                scaler.update()
+
+                # Optimizer step (scaled if using amp)
+                if use_cuda_amp and scaler is not None:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
                 
