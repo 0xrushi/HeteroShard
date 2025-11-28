@@ -36,6 +36,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from hetero_framework.core.transport import send_tensor, recv_tensor
+from transformers.models.llama.modeling_llama import create_causal_mask
 
 
 class Config:
@@ -182,12 +183,42 @@ class LocalModelShard(nn.Module):
         self.embed_tokens = base_model.model.embed_tokens
         self.layers = nn.ModuleList(base_model.model.layers[:split_layer])
         self.config = base_model.config
+        # Rotary embedding module required by decoder layers in HF >= 4.57
+        self.rotary_emb = base_model.model.rotary_emb
         
     def forward(self, input_ids, attention_mask=None):
+        # Embed tokens
         hidden_states = self.embed_tokens(input_ids)
+
+        # Build position ids and cache position
+        batch_size, seq_len = hidden_states.size(0), hidden_states.size(1)
+        device = hidden_states.device
+        cache_position = torch.arange(0, seq_len, device=device)
+        position_ids = cache_position.unsqueeze(0).expand(batch_size, -1)
+
+        # Build causal mask compatible with HF attention
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=hidden_states,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=None,
+            position_ids=position_ids,
+        )
+
+        # Precompute rotary position embeddings (cos, sin)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        # Run through local decoder layers 0..split-1
         for layer in self.layers:
-            layer_outputs = layer(hidden_states, attention_mask=attention_mask)
-            hidden_states = layer_outputs[0]
+            hidden_states = layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_ids=position_ids,
+                past_key_values=None,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
         return hidden_states
 
 
@@ -206,11 +237,39 @@ class RemoteModelShard(nn.Module):
         self.norm = base_model.model.norm
         self.lm_head = base_model.lm_head
         self.config = base_model.config
+        # Rotary embedding module required by decoder layers in HF >= 4.57
+        self.rotary_emb = base_model.model.rotary_emb
         
     def forward(self, hidden_states, attention_mask=None, labels=None):
+        # Build position ids and cache position based on incoming hidden states
+        batch_size, seq_len = hidden_states.size(0), hidden_states.size(1)
+        device = hidden_states.device
+        cache_position = torch.arange(0, seq_len, device=device)
+        position_ids = cache_position.unsqueeze(0).expand(batch_size, -1)
+
+        # Build causal mask compatible with HF attention
+        causal_mask = create_causal_mask(
+            config=self.config,
+            input_embeds=hidden_states,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=None,
+            position_ids=position_ids,
+        )
+
+        # Precompute rotary position embeddings (cos, sin)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        # Run through remote decoder layers split..end
         for layer in self.layers:
-            layer_outputs = layer(hidden_states, attention_mask=attention_mask)
-            hidden_states = layer_outputs[0]
+            hidden_states = layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_ids=position_ids,
+                past_key_values=None,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
         
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
@@ -506,4 +565,3 @@ if __name__ == "__main__":
         print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
-
