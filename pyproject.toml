@@ -1,0 +1,37 @@
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+include = "^.+\\.(py|pyi)$"
+exclude = '''
+(
+  ^\\.venv/
+| ^build/
+| ^dist/
+| ^\\.git/
+)
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [
+  ".venv",
+  "build",
+  "dist",
+]
+
+[tool.ruff.lint]
+select = [
+  "F",   # pyflakes (undefined names, unused imports/vars)
+  "I",   # isort (import sorting)
+  "ARG", # flake8-unused-arguments
+]
+ignore = [
+  "E501",  # line length handled by Black
+]
+
+[tool.ruff.format]
+quote-style = "preserve"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
