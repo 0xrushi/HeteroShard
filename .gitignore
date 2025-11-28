@@ -68,3 +68,4 @@ checkpoints/
 # Ignore folder
 ignore/
 
+*.safetensors

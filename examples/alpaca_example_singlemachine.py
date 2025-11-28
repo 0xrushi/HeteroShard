@@ -6,18 +6,11 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-import torch
-from torch.utils.data import Dataset
 from datasets import load_dataset
-from typing import Dict, Any, List, Optional
 
-# Core HF + Unsloth/PEFT imports
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-# -------------------------------
-# 1) Config
-# -------------------------------
 class Config:
     base_model = "unsloth/llama-3.1-8b-bnb-4bit"
     output_dir = "./lora_unsloth_sft"
@@ -41,14 +34,13 @@ class Config:
     clip_grad_norm = 1.0
 
     # Mixed precision
-    use_fp16 = True
+    use_fp16 = True # disable for strix halo
 
-    # Prompt formatting
     system_prompt = "You are a helpful assistant."
     instruction_template = "<|user|>\n{instruction}\n"
     response_template = "<|assistant|>\n{response}\n"
 
-    # Special tokens for chat-y formatting (adjust according to the model)
+    # Special tokens for chat-y formatting
     bos_token = "<s>"
     eos_token = "</s>"
     unk_token = "<unk>"
@@ -56,9 +48,6 @@ class Config:
     # Save frequency
     save_every_n_steps = 1000
 
-
-# Reuse your existing Config (system prompt, templates, max_length, etc.)
-# Ensure Config has: system_prompt, instruction_template, response_template, bos_token, eos_token, max_length
 
 class AlpacaSFTDataset(Dataset):
     """
@@ -72,7 +61,7 @@ class AlpacaSFTDataset(Dataset):
         self,
         tokenizer,
         max_length: int,
-        split: str = "train[:1000]",  # adjust slice size as needed
+        split: str = "train[:1000]",
         add_bos_eos: bool = True,
         mask_user_tokens: bool = False,
     ):
@@ -81,10 +70,8 @@ class AlpacaSFTDataset(Dataset):
         self.add_bos_eos = add_bos_eos
         self.mask_user_tokens = mask_user_tokens
 
-        # 1-line HF load
         self.dataset = load_dataset("tatsu-lab/alpaca", split=split)
 
-        # Precompute formatted texts to keep __getitem__ light
         self.formatted_texts: List[str] = []
         for row in self.dataset:
             instruction = (row.get("instruction") or "").strip()
@@ -97,7 +84,6 @@ class AlpacaSFTDataset(Dataset):
             else:
                 user_block = instruction
 
-            # Apply your templates
             text = (
                 (Config.bos_token if self.add_bos_eos else "")
                 + f"{Config.system_prompt}\n"
@@ -126,9 +112,7 @@ class AlpacaSFTDataset(Dataset):
         labels = input_ids.clone()
 
         if self.mask_user_tokens:
-            # Optional: mask loss on user/prompt tokens, train only on assistant response.
-            # We find the assistant tag boundary and set labels before it to -100.
-            # Adjust this heuristic if your templates differ.
+            # mask loss on user/prompt tokens, train only on assistant response.
             decoded = self.tokenizer.decode(input_ids)
             # We expect something like: ... <|assistant|>\n RESPONSE ... </s>
             assistant_tag = "<|assistant|>"
@@ -152,9 +136,6 @@ class AlpacaSFTDataset(Dataset):
             "labels": labels,
         }
 
-# -------------------------------
-# 3) Collator
-# -------------------------------
 @dataclass
 class DataCollator:
     tokenizer: AutoTokenizer
@@ -176,9 +157,7 @@ class DataCollator:
             "labels": labels,
         }
 
-# -------------------------------
-# 4) Optimizer & scheduler
-# -------------------------------
+# Optimizer & scheduler
 class CosineScheduler:
     """
     Simple cosine decay with linear warmup.
@@ -204,9 +183,6 @@ class CosineScheduler:
                 lr = base_lr * (self.min_lr_ratio + (1 - self.min_lr_ratio) * cosine)
             group["lr"] = lr
 
-# -------------------------------
-# 5) Utilities
-# -------------------------------
 def ensure_output_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
@@ -217,9 +193,6 @@ def save_lora(peft_model, output_dir: str, step: Optional[int] = None):
     peft_model.save_pretrained(save_dir)
     print(f"Saved LoRA adapters to: {save_dir}")
 
-# -------------------------------
-# 6) Main training function
-# -------------------------------
 def main():
     start_time = time.perf_counter()
     ensure_output_dir(Config.output_dir)
@@ -227,15 +200,11 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(Config.base_model, use_fast=True)
-    # Ensure special tokens exist
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": Config.eos_token})
     pad_token_id = tokenizer.pad_token_id
 
-    # Load model (bnb 4-bit from Unsloth for memory efficiency).
-    # If not using k-bit quant, remove prepare_model_for_kbit_training.
     model = AutoModelForCausalLM.from_pretrained(
         Config.base_model,
         torch_dtype=torch.float16 if Config.use_fp16 else torch.float32,
@@ -245,10 +214,8 @@ def main():
     # If the base is a k-bit quantized model, prep it for PEFT training
     model = prepare_model_for_kbit_training(model)
 
-    # Resize embeddings if we added a pad token
     model.resize_token_embeddings(len(tokenizer))
 
-    # Set up LoRA
     lora_cfg = LoraConfig(
         r=Config.lora_r,
         lora_alpha=Config.lora_alpha,
@@ -260,7 +227,6 @@ def main():
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
 
-    # Dataset & DataLoader
     dataset = AlpacaSFTDataset(tokenizer=tokenizer, max_length=Config.max_length)
     collator = DataCollator(tokenizer=tokenizer, pad_token_id=pad_token_id)
     loader = DataLoader(
@@ -271,7 +237,6 @@ def main():
         drop_last=False,
     )
 
-    # Optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=Config.lr,
@@ -335,12 +300,9 @@ def main():
                 if global_step % Config.save_every_n_steps == 0:
                     save_lora(model, Config.output_dir, step=global_step)
 
-    # Final save
     save_lora(model, Config.output_dir)
-
     print("Training complete.")
 
-    # Optional: quick generation test using LoRA adapters
     model.eval()
     test_prompt = f"{Config.bos_token}{Config.system_prompt}\n" + Config.instruction_template.format(
         instruction="Write a haiku about GPUs."
