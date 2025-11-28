@@ -1,3 +1,5 @@
 torch>=2.0.0
 graphviz>=0.20.1
-
+transformers
+peft
+datasets
