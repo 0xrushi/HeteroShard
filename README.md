@@ -1,4 +1,4 @@
-# Heterogeneous GPU Training Framework
+# HeteroShard - An opensource Heterogeneous GPU Training Framework
 
 A distributed deep learning framework for training models across heterogeneous hardware (e.g., Mac MPS + Linux NVIDIA/AMD GPU).
 
