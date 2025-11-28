@@ -11,6 +11,10 @@ This framework enables you to split neural network training across multiple mach
 - **Flexible Architecture**: Easy to extend and customize for different model architectures
 - **Visualization**: Automatic generation of architecture diagrams (Graphviz/Mermaid)
 
+## Intro Video
+
+[![Intro Video](https://img.youtube.com/vi/49jfIW3-Iy0/0.jpg)](https://www.youtube.com/watch?v=49jfIW3-Iy0)
+
 ## Features
 
 - Explicit multi-stage pipeline with shard_plan
