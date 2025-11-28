@@ -489,9 +489,9 @@ def run_coordinator(hetero_config: dict):
     
     total_steps = Config.num_epochs * math.ceil(len(loader) / Config.grad_accum_steps)
     scheduler = CosineScheduler(optimizer, warmup_steps=Config.warmup_steps, total_steps=total_steps)
-    # Use new torch.amp API (GradScaler requires CUDA; disable otherwise)
+    # Autocast for mixed precision; avoid GradScaler since loss is remote
     use_cuda_amp = (Config.use_fp16 and torch.cuda.is_available())
-    scaler = torch.amp.GradScaler('cuda') if use_cuda_amp else None
+    scaler = None
     
     print("=" * 70)
     print("TRAINING")
@@ -532,37 +532,26 @@ def run_coordinator(hetero_config: dict):
                 break
             loss = loss.to(device)
             grad_hidden = grad_hidden.to(device)
-            loss = loss / Config.grad_accum_steps
+            
+            # Scale gradient for accumulation (equivalent to loss/=accum)
+            grad_hidden = grad_hidden / Config.grad_accum_steps
 
             # Backpropagate into local shard using received gradient
-            # If using GradScaler, manually scale external gradient
-            if use_cuda_amp and scaler is not None:
-                scaled_grad = grad_hidden * scaler.get_scale()
-                hidden_states.backward(scaled_grad)
-            else:
-                hidden_states.backward(grad_hidden)
+            hidden_states.backward(grad_hidden)
 
             running_loss += float(loss.item())
             accum_steps += 1
             
             if accum_steps % Config.grad_accum_steps == 0:
-                # Always unscale before step if using amp, and optionally clip
-                if use_cuda_amp and scaler is not None:
-                    scaler.unscale_(optimizer)
+                # Clip and step without GradScaler (loss is remote)
                 if Config.clip_grad_norm:
                     torch.nn.utils.clip_grad_norm_(local_shard.parameters(), Config.clip_grad_norm)
-
-                # Optimizer step (scaled if using amp)
-                if use_cuda_amp and scaler is not None:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
+                optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
                 
                 global_step += 1
-                avg_loss = running_loss
+                avg_loss = running_loss / Config.grad_accum_steps
                 running_loss = 0.0
                 accum_steps = 0
                 
