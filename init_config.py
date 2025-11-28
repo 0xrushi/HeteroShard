@@ -11,6 +11,7 @@ before running this script.
 
 import json
 import os
+import socket
 from typing import Any
 
 
@@ -63,8 +64,6 @@ def get_yes_no(prompt: str, default: bool = True) -> bool:
 
 def detect_current_machine_info() -> dict[str, Any]:
     """Try to detect current machine information."""
-    import socket
-
     info = {"hostname": socket.gethostname(), "ip": "unknown"}
 
     try:

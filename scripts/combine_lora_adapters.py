@@ -64,7 +64,7 @@ def main():
 
     save_safetensors(merged, str(out_dir / "adapter_model.safetensors"))
     (out_dir / "adapter_config.json").write_text(json.dumps(adapter_config, indent=2))
-    print(f"✓ Merged {len(args.adapters)} adapters into: {out_dir}")
+    print(f"Merged {len(args.adapters)} adapters into: {out_dir}")
 
 
 if __name__ == "__main__":

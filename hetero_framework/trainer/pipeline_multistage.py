@@ -21,7 +21,15 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from ..core.commands import CMD_BWD, CMD_FWD, CMD_FWD_LOSS, CMD_OPT_STEP
+from ..core.commands import (
+    CMD_BWD,
+    CMD_FWD,
+    CMD_FWD_LOSS,
+    CMD_HAS_CKPT,
+    CMD_LOAD_CKPT,
+    CMD_OPT_STEP,
+    CMD_SAVE_CKPT,
+)
 from ..core.transport import recv_tensor, send_tensor
 from ..visualizer.graph_gen import GraphGenerator
 from ..core.dal import DeviceAbstractionLayer
@@ -174,7 +182,9 @@ class MultiStagePipelineTrainer:
                 try:
                     step = self._resolve_resume_step(self.resume_step)
                     if step is None:
-                        print("No common checkpoint found across coordinator and workers; starting fresh.")
+                        print(
+                            "No common checkpoint found across coordinator and workers; starting fresh."
+                        )
                     else:
                         self._load_checkpoint(step, optimizer, scheduler)
                         print(f"Resumed from step {step}")
@@ -298,13 +308,19 @@ class MultiStagePipelineTrainer:
         print(f"\nTotal training time: {t1 - t0:.2f} seconds")
 
     def _ckpt_paths(self, step: int) -> tuple[str, str]:
-        base = os.path.join(self.checkpoint_dir, "checkpoints") if self.checkpoint_dir else "./checkpoints"
+        base = (
+            os.path.join(self.checkpoint_dir, "checkpoints")
+            if self.checkpoint_dir
+            else "./checkpoints"
+        )
         coord_dir = os.path.join(base, "coordinator")
         os.makedirs(coord_dir, exist_ok=True)
         coord_path = os.path.join(coord_dir, f"step_{step:06d}.pt")
         return base, coord_path
 
-    def _save_checkpoint(self, step: int, optimizer: torch.optim.Optimizer, scheduler: "_CosineScheduler") -> None:
+    def _save_checkpoint(
+        self, step: int, optimizer: torch.optim.Optimizer, scheduler: "_CosineScheduler"
+    ) -> None:
         base, coord_path = self._ckpt_paths(step)
         state = {
             "model": self.local_shard.state_dict(),
@@ -314,8 +330,6 @@ class MultiStagePipelineTrainer:
             "shard_plan": self.shard_plan,
         }
         torch.save(state, coord_path)
-
-        from ..core.commands import CMD_SAVE_CKPT
 
         for sock in self.sockets:
             send_tensor(sock, torch.tensor(CMD_SAVE_CKPT, dtype=torch.int32))
@@ -351,8 +365,6 @@ class MultiStagePipelineTrainer:
             if s not in candidates:
                 candidates.append(s)
 
-        from ..core.commands import CMD_HAS_CKPT
-
         for step in candidates:
             if step is None:
                 continue
@@ -369,7 +381,9 @@ class MultiStagePipelineTrainer:
                 return step
         return None
 
-    def _load_checkpoint(self, step: int, optimizer: torch.optim.Optimizer, scheduler: "_CosineScheduler") -> None:
+    def _load_checkpoint(
+        self, step: int, optimizer: torch.optim.Optimizer, scheduler: "_CosineScheduler"
+    ) -> None:
         # Load coordinator
         _, coord_path = self._ckpt_paths(step)
         if not os.path.exists(coord_path):
@@ -379,13 +393,21 @@ class MultiStagePipelineTrainer:
         saved = state.get("model", {})
         if isinstance(saved, dict):
             current = self.local_shard.state_dict()
-            filtered = {k: v for k, v in saved.items() if k in current and getattr(current[k], "shape", None) == getattr(v, "shape", None)}
+            filtered = {
+                k: v
+                for k, v in saved.items()
+                if k in current and getattr(current[k], "shape", None) == getattr(v, "shape", None)
+            }
             missing = [k for k in current.keys() if k not in filtered]
             unexpected = [k for k in saved.keys() if k not in current]
             if unexpected:
-                print(f"Note: ignoring {len(unexpected)} unexpected keys when loading coordinator shard")
+                print(
+                    f"Note: ignoring {len(unexpected)} unexpected keys when loading coordinator shard"
+                )
             if missing:
-                print(f"Note: {len(missing)} keys missing in checkpoint for coordinator shard; loading partial state")
+                print(
+                    f"Note: {len(missing)} keys missing in checkpoint for coordinator shard; loading partial state"
+                )
             self.local_shard.load_state_dict(filtered, strict=False)
         else:
             # Fallback
@@ -394,8 +416,6 @@ class MultiStagePipelineTrainer:
         sched_state = state.get("scheduler", None)
         if sched_state is not None:
             scheduler.load_state_dict(sched_state)
-
-        from ..core.commands import CMD_LOAD_CKPT
 
         for sock in self.sockets:
             send_tensor(sock, torch.tensor(CMD_LOAD_CKPT, dtype=torch.int32))

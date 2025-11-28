@@ -78,7 +78,7 @@ class RelayGradientWorker:
         self.server_sock.listen(1)
 
         self.client_sock, addr = self.server_sock.accept()
-        print(f"✓ Connected to coordinator at {addr}\n")
+        print(f"Connected to coordinator at {addr}\n")
         self._loop()
 
     def _loop(self) -> None:
@@ -218,13 +218,22 @@ class RelayGradientWorker:
                         saved = state.get("model", {})
                         if isinstance(saved, dict):
                             current = self.model_shard.state_dict()
-                            filtered = {k: v for k, v in saved.items() if k in current and getattr(current[k], "shape", None) == getattr(v, "shape", None)}
+                            filtered = {
+                                k: v
+                                for k, v in saved.items()
+                                if k in current
+                                and getattr(current[k], "shape", None) == getattr(v, "shape", None)
+                            }
                             missing = [k for k in current.keys() if k not in filtered]
                             unexpected = [k for k in saved.keys() if k not in current]
                             if unexpected:
-                                print(f"Note: ignoring {len(unexpected)} unexpected keys when loading worker shard")
+                                print(
+                                    f"Note: ignoring {len(unexpected)} unexpected keys when loading worker shard"
+                                )
                             if missing:
-                                print(f"Note: {len(missing)} keys missing in checkpoint for worker shard; loading partial state")
+                                print(
+                                    f"Note: {len(missing)} keys missing in checkpoint for worker shard; loading partial state"
+                                )
                             self.model_shard.load_state_dict(filtered, strict=False)
                         else:
                             self.model_shard.load_state_dict(saved, strict=False)
@@ -235,9 +244,7 @@ class RelayGradientWorker:
                             except Exception as e:
                                 print(f"Note: skipping optimizer state load: {e}")
                         self._opt_steps = int(state.get("opt_steps", 0))
-                        print(
-                            f"Loaded checkpoint step {target_step} (opt_steps={self._opt_steps})"
-                        )
+                        print(f"Loaded checkpoint step {target_step} (opt_steps={self._opt_steps})")
                         send_tensor(self.client_sock, torch.tensor(1, dtype=torch.int32))
                     except Exception as e:
                         print(f"Failed to load worker ckpt: {e}")

@@ -21,6 +21,7 @@ import math
 import os
 import socket as socket_module
 import sys
+import traceback
 from dataclasses import dataclass
 from typing import Any
 
@@ -370,11 +371,11 @@ def load_config(config_path: str):
         with open(config_path) as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"❌ Config file not found: {config_path}")
+        print(f"Config file not found: {config_path}")
         print("   Run: python init_config.py")
         sys.exit(1)
     except json.JSONDecodeError as e:
-        print(f"❌ Invalid JSON: {e}")
+        print(f"Invalid JSON: {e}")
         sys.exit(1)
 
 
@@ -389,21 +390,21 @@ def detect_role(hetero_config: dict):
     except:
         local_ip = "unknown"
 
-    print(f"📍 This machine: {hostname} ({local_ip})")
+    print(f"This machine: {hostname} ({local_ip})")
 
     # Check if coordinator
     coord = hetero_config.get("coordinator", {})
     if coord.get("hostname") == hostname or coord.get("ip") == local_ip:
-        print("✓ Role: COORDINATOR\n")
+        print("Role: COORDINATOR\n")
         return "coordinator", None
 
     # Check if worker
     for worker in hetero_config.get("workers", []):
         if worker["hostname"] == hostname or worker["ip"] == local_ip:
-            print(f"✓ Role: WORKER {worker['id']}\n")
+            print(f"Role: WORKER {worker['id']}\n")
             return "worker", worker
 
-    print("❌ This machine not found in config!")
+    print("This machine not found in config!")
     print("   Add this machine to hetero_config.json")
     sys.exit(1)
 
@@ -446,7 +447,7 @@ def run_worker(worker_config: dict):
         this_id = worker_config.get("id")
         stage = next((s for s in shard_plan if s.get("id") == this_id), None)
         if stage is None:
-            print(f"❌ shard_plan has no entry for worker id {this_id}")
+            print(f"shard_plan has no entry for worker id {this_id}")
             sys.exit(1)
         start, end = int(stage["start"]), int(stage["end"])
         is_last = bool(stage.get("is_last", False))
@@ -454,7 +455,7 @@ def run_worker(worker_config: dict):
             remote_shard = RemoteModelShard(full_model, start)
         else:
             remote_shard = IntermediateRemoteShard(full_model, start, end)
-        print(f"✓ Remote shard ready ({start}-{end}{' LAST' if is_last else ''})")
+        print(f"Remote shard ready ({start}-{end}{' LAST' if is_last else ''})")
         print(f"Listening on 0.0.0.0:{worker_config['port']}...")
         run_relay_worker(
             remote_shard,
@@ -473,7 +474,7 @@ def run_worker(worker_config: dict):
         return
 
     # No shard_plan: instruct user to define explicit splits
-    print("❌ shard_plan not found in config. Please define explicit layer splits for this worker.")
+    print("shard_plan not found in config. Please define explicit layer splits for this worker.")
     sys.exit(1)
 
 
@@ -569,10 +570,10 @@ def run_coordinator(hetero_config: dict):
                 return hidden_states
 
         local_shard = _LocalShard(full_model, local_start, local_end).to(device)
-        print(f"✓ Local shard ready (Embedding + Layers {local_start}-{local_end-1})\n")
+        print(f"Local shard ready (Embedding + Layers {local_start}-{local_end-1})\n")
     else:
         local_shard = LocalModelShard(full_model, Config.split_layer).to(device)
-        print(f"✓ Local shard ready (Embedding + Layers 0-{Config.split_layer-1})\n")
+        print(f"Local shard ready (Embedding + Layers 0-{Config.split_layer-1})\n")
     local_shard.train()
 
     print("Loading dataset...")
@@ -581,12 +582,12 @@ def run_coordinator(hetero_config: dict):
     loader = DataLoader(
         dataset, batch_size=Config.batch_size, shuffle=True, collate_fn=collator, drop_last=False
     )
-    print(f"✓ Dataset: {len(dataset)} examples\n")
+    print(f"Dataset: {len(dataset)} examples\n")
 
     # Build and run multi-stage trainer using explicit config values
     # Always use multi-stage trainer when shard_plan is provided; otherwise error.
     if not shard_plan:
-        print("❌ shard_plan not found in config. Please define explicit layer splits.")
+        print("shard_plan not found in config. Please define explicit layer splits.")
         return
 
     print("Connecting to workers...")
@@ -681,7 +682,7 @@ def main():
     args = parser.parse_args()
 
     hetero_config = load_config(args.config)
-    
+
     if args.checkpoint_dir is not None:
         hetero_config["checkpoint_dir"] = args.checkpoint_dir
     if args.resume_step is not None:
@@ -730,7 +731,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.")
     except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-
+        print(f"\nError: {e}")
         traceback.print_exc()

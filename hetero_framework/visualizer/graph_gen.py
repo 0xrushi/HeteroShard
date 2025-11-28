@@ -136,7 +136,7 @@ class GraphGenerator:
 
         try:
             dot.render(output_path, format=format, cleanup=True)
-            print(f"✓ Architecture diagram saved to {output_path}.{format}")
+            print(f"Architecture diagram saved to {output_path}.{format}")
             return True
         except FileNotFoundError as e:
             error_msg = (
